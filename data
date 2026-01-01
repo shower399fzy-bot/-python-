@@ -1,0 +1,147 @@
+import time
+import serial
+import pymysql
+import numpy
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
+
+plt.rcParams['font.sans-serif'] = ['SimHei']
+# Matplotlib中设置字体-黑体，解决Matplotlib中文乱码问题
+plt.rcParams['axes.unicode_minus'] = False
+# 解决Matplotlib坐标轴负号'-'显示为方块的问题
+sns.set(font='SimHei')
+# Seaborn中设置字体-黑体，解决Seaborn中文乱码问题
+
+
+"""读取数据代码"""
+temp_z_send = '05 03 00 00 00 02 C5 8F'
+temp_x_send = '06 03 00 00 00 02 C5 BC'
+temp_y_send = '07 03 00 00 00 02 C4 6D'
+temp_x_zero = '06 06 00 02 00 01 E8 7D'
+temp_y_zero = '07 06 00 02 00 01 E9 AC'
+temp_z_zero = '05 06 00 02 00 01 E8 4E'
+"""清零"""
+
+
+def ZREO():
+    ser = serial.Serial('COM6', 9600, timeout=1)  # 打开串口
+    temp_x_zero_b = bytes.fromhex(temp_x_zero)
+    temp_y_zero_b = bytes.fromhex(temp_y_zero)
+    temp_z_zero_b = bytes.fromhex(temp_z_zero)
+    ser.write(temp_x_zero_b)
+    time.sleep(0.3)
+    ser.write(temp_y_zero_b)
+    time.sleep(0.3)
+    ser.write(temp_z_zero_b)
+    time.sleep(10)
+    ser.close()
+
+
+def read_data():
+    """打开串口连接数据库"""
+    ser = serial.Serial('COM6', 9600, timeout=1)  # 打开串口
+    conn = pymysql.connect(host='localhost', port=3306, user='root', passwd='123456', db='db2', charset='utf8mb4')
+    cursor = conn.cursor()  # 连接数据库并设置游标
+    if ser.is_open:
+        print("port is opening")
+
+    """创建表"""
+    cursor.execute("drop table if exists data_table")
+    bt_sql = """create table if not exists data_table(
+            TIME char(50),
+            X_DATA float,
+            Y_DATA float,
+            Z_DATA float
+            )"""
+    cursor.execute(bt_sql)
+
+    """获取数据并导入数据库"""
+
+    temp_x_send_b = bytes.fromhex(temp_x_send)
+    temp_y_send_b = bytes.fromhex(temp_y_send)
+    temp_z_send_b = bytes.fromhex(temp_z_send)
+    print(temp_x_send_b, temp_y_send_b, temp_z_send_b)
+    temp = 0  # 标志变量
+    while temp < 10:
+        """写入传感器"""
+
+        ser.write(temp_x_send_b)
+        time.sleep(0.3)
+        ser.write(temp_y_send_b)
+        time.sleep(0.3)
+        ser.write(temp_z_send_b)
+        time.sleep(0.3)
+        #  获取缓冲区data长度   27
+        buffer_data = ser.in_waiting
+        # print('buffer_data:', buffer_data)
+        if buffer_data:
+            return_data = ser.read(buffer_data)  # b'\x06\x03\x00\x00\x00\x02\xc5\xbc'
+            print("二进制数据：", return_data)
+            return_data_hex = str(return_data.hex())  # 转为十六进制字符串欲进行切片
+            print("十六进制：", return_data_hex)
+            # 060304000e0000ed30070304000200003df305030400b300004e14
+            #  切片并转为十进制
+            Data_X = int(return_data_hex[10:14] + return_data_hex[6:10], 16)
+            Data_Y = int(return_data_hex[28:32] + return_data_hex[24:28], 16)
+            Data_Z = int(return_data_hex[46:50] + return_data_hex[42:46], 16)
+            print("当前各轴力为：", Data_X, Data_Y, Data_Z)
+            localtime = time.asctime(time.localtime(time.time()))  # time包操作，打印本地时间
+            local_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())  # 格式化时间
+            print(localtime)
+            data_sql = f"insert into data_table (TIME,X_DATA,Y_DATA,Z_DATA)values('{local_time}','{Data_X}','{Data_Y}','{Data_Z}')"
+            cursor.execute(data_sql)
+            conn.commit()
+            time.sleep(1)
+            temp += 1
+
+    cursor.close()
+    conn.close()
+    ser.close()
+
+
+def painting():
+    time = []
+    x = []
+    y = []
+    z = []
+    conn = pymysql.connect(host='localhost', port=3306, user='root', password='123456', db='db2', charset='utf8')
+    cursor = conn.cursor()  # 数据库操作
+
+    cursor.execute('use db2')
+    cursor.execute("select * from data_table ")
+    data = cursor.fetchall()
+    print(data)
+    for i in data:
+        time.append(i[0])
+        x.append(i[1])
+        y.append(i[2])
+        z.append(i[3])
+
+    print(time, x, y, z)
+    cursor.close()
+    conn.close()
+
+    # 绘图
+    plt.style.use('Solarize_Light2')
+    fig, ax = plt.subplots()
+    ax.plot(time, x, linewidth=1, c='red', alpha=0.5)
+    ax.plot(time, y, linewidth=1, c='blue', alpha=0.5)
+    ax.plot(time, z, linewidth=1, c='purple', alpha=0.5)
+    # ax.fill_between(dates,highs,lows,facecolor='green',alpha=0.1)#填充中间颜色
+    #
+    # #设置标签值
+    ax.set_title('x_y_z轴压力情况', fontsize=20)
+    ax.set_xlabel('日期', fontsize=16)
+    fig.autofmt_xdate()  # 绘制倾斜格式
+    ax.set_ylabel('压力', fontsize=16)
+    ax.tick_params(axis='both', which='major')
+
+    plt.show()
+
+
+if __name__ == '__main__':
+    ZREO()
+    time.sleep(10)
+    read_data()
+    painting()
